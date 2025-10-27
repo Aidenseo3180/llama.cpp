@@ -25,6 +25,23 @@
 #include <sstream>
 #include <stdexcept>
 
+
+
+// 파일 상단 전역 변수들
+std::vector<float> g_layer17_vision_output;
+std::vector<float> g_layer17_text_output;
+std::vector<float> g_layer21_vision_output;
+std::vector<float> g_layer21_text_output;
+bool g_enable_layer_capture = true;
+int g_layer17_vision_captured = 0;   // 0으로 초기화
+bool g_layer17_text_captured = false;
+int g_layer21_vision_captured = 0;   // 0으로 초기화
+bool g_layer21_text_captured = false;
+
+ggml_tensor * g_layer17_output_copy = nullptr;
+ggml_tensor * g_layer21_output_copy = nullptr;
+
+
 const char * llm_type_name(llm_type type) {
     switch (type) {
         case LLM_TYPE_14M:           return "14M";
@@ -6353,6 +6370,7 @@ ggml_tensor * llama_model::get_rope_factors(const llama_cparams & cparams, int i
     return layers[il].rope_short;
 }
 
+
 struct llm_build_llama : public llm_graph_context {
     llm_build_llama(const llama_model & model, const llm_graph_params & params) : llm_graph_context(params) {
         const int64_t n_embd_head = hparams.n_embd_head_v;
@@ -6494,6 +6512,42 @@ struct llm_build_llama : public llm_graph_context {
             cur = build_cvec(cur, il);
             cb(cur, "l_out", il);
 
+            
+
+            // ===== Layer output 복사본 생성 =====
+            if (g_enable_layer_capture) {
+                if (il == 16) { // Layer 17
+                    // 별도의 메모리 공간에 복사본 생성
+                    g_layer17_output_copy = ggml_dup(ctx0, cur);
+                    ggml_set_name(g_layer17_output_copy, "layer_17_output_copy");
+                    ggml_set_output(g_layer17_output_copy);  // output으로 표시해서 유지
+                    
+                    printf("=== [GRAPH BUILD] Layer 17 copy created (original=%p, copy=%p) ===\n", 
+                        (void*)cur, (void*)g_layer17_output_copy);
+                    fflush(stdout);
+                    
+                    cb(g_layer17_output_copy, "layer_17_copy", il);
+                    
+                    // Graph에 추가
+                    ggml_build_forward_expand(gf, g_layer17_output_copy);
+                }
+                if (il == 20) { // Layer 21
+                    g_layer21_output_copy = ggml_dup(ctx0, cur);
+                    ggml_set_name(g_layer21_output_copy, "layer_21_output_copy");
+                    ggml_set_output(g_layer21_output_copy);
+                    
+                    printf("=== [GRAPH BUILD] Layer 21 copy created (original=%p, copy=%p) ===\n", 
+                        (void*)cur, (void*)g_layer21_output_copy);
+                    fflush(stdout);
+                    
+                    cb(g_layer21_output_copy, "layer_21_copy", il);
+                    
+                    ggml_build_forward_expand(gf, g_layer21_output_copy);
+                }
+            }
+            // =====
+
+
             // input for next layer
             inpL = cur;
         }
@@ -6516,6 +6570,8 @@ struct llm_build_llama : public llm_graph_context {
         ggml_build_forward_expand(gf, cur);
     }
 };
+
+
 
 struct llm_build_llama_iswa : public llm_graph_context {
     llm_build_llama_iswa(const llama_model & model, const llm_graph_params & params) : llm_graph_context(params) {

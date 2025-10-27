@@ -12,6 +12,7 @@
 #include <limits>
 #include <stdexcept>
 
+
 //
 // llama_context
 //
@@ -955,6 +956,8 @@ int llama_context::encode(const llama_batch & batch_inp) {
     return 0;
 }
 
+
+
 int llama_context::decode(const llama_batch & batch_inp) {
     GGML_ASSERT((!batch_inp.token && batch_inp.embd) || (batch_inp.token && !batch_inp.embd)); // NOLINT
 
@@ -1002,6 +1005,12 @@ int llama_context::decode(const llama_batch & batch_inp) {
         t_compute_start_us = ggml_time_us();
     }
     n_queued_tokens += n_tokens_all;
+
+    // ===== 배치 정보 로깅 =====
+    // printf("\n=== [DECODE START] n_tokens_all=%u, n_outputs_all=%u ===\n", 
+    //     n_tokens_all, n_outputs_all);
+    // fflush(stdout);
+    // =====
 
     // TODO: this clear of the buffer can easily be forgotten - need something better
     embd_seq.clear();
@@ -1084,6 +1093,12 @@ int llama_context::decode(const llama_batch & batch_inp) {
             n_outputs = n_outputs_new;
         }
 
+        // ===== ubatch 정보 로깅 =====
+        // printf("=== [UBATCH] n_tokens=%u, n_outputs=%d ===\n", 
+        //     ubatch.n_tokens, n_outputs);
+        // fflush(stdout);
+        // =====
+
         ggml_status status;
         const auto * res = process_ubatch(ubatch, LLM_GRAPH_TYPE_DECODER, mctx.get(), status);
 
@@ -1117,6 +1132,368 @@ int llama_context::decode(const llama_batch & batch_inp) {
                 case GGML_STATUS_SUCCESS:      GGML_ABORT("should not happen");
             }
         }
+
+
+
+        // ===== Backend 동기화 =====
+        if (g_enable_layer_capture) {
+            ggml_backend_sched_synchronize(sched.get());
+            printf("=== [SYNC] Backend synchronized, ready to capture ===\n");
+            fflush(stdout);
+        }
+        // =====
+
+        // ===== Layer output 캡처 (복사본 사용) =====
+        if (g_enable_layer_capture && res) {
+            bool is_vision_batch = ubatch.n_tokens > 60;  // 512도 64도 둘 다 잡음
+            bool is_text_batch = ubatch.n_tokens >= 5 && ubatch.n_tokens < 60 && !is_vision_batch;
+            bool is_generation = ubatch.n_tokens <= 4;
+            
+            printf("=== [BATCH TYPE CHECK] n_tokens=%u -> vision=%d, text=%d, generation=%d ===\n",
+                ubatch.n_tokens, is_vision_batch, is_text_batch, is_generation);
+            fflush(stdout);
+            
+            if ((is_vision_batch || is_text_batch) && !is_generation) {
+                
+                // ===== Layer 17 Vision 캡처 (Append 방식) =====
+                bool need_l17_vision = is_vision_batch && (g_layer17_vision_captured < 2);
+                                
+                if (need_l17_vision && g_layer17_output_copy) {
+                    printf("\n=== [CAPTURE START] Layer 17 VISION batch #%d (from copy) ===\n", 
+                        g_layer17_vision_captured + 1);
+                    
+                    printf("  -> Copy tensor pointer: %p\n", (void*)g_layer17_output_copy);
+                    printf("  -> Copy data pointer: %p\n", (void*)g_layer17_output_copy->data);
+                    
+                    int64_t n_elements = ggml_nelements(g_layer17_output_copy);
+                    printf("  -> Total elements: %lld (%.2f MB)\n",
+                        n_elements, (n_elements * sizeof(float)) / (1024.0 * 1024.0));
+                    fflush(stdout);
+                    
+                    std::vector<float> temp_output(n_elements);
+                    ggml_backend_tensor_get(g_layer17_output_copy, 
+                        temp_output.data(), 0, n_elements * sizeof(float));
+                    
+                    printf("  -> First 20 values: ");
+                    for (int i = 0; i < std::min(20, (int)n_elements); i++) {
+                        printf("%.4f ", temp_output[i]);
+                    }
+                    printf("\n");
+                    fflush(stdout);
+                    
+                    // Append 방식
+                    if (g_layer17_vision_captured == 0) {
+                        // 첫 번째 ubatch: 그냥 저장
+                        g_layer17_vision_output = std::move(temp_output);
+                        printf("  -> ✓ Layer 17 VISION batch #1 captured! Size: %zu elements\n", 
+                            g_layer17_vision_output.size());
+                    } else {
+                        // 두 번째+ ubatch: 기존 끝에 추가
+                        size_t old_size = g_layer17_vision_output.size();
+                        g_layer17_vision_output.insert(
+                            g_layer17_vision_output.end(),
+                            temp_output.begin(),
+                            temp_output.end()
+                        );
+                        printf("  -> ✓ Layer 17 VISION batch #%d appended! Size: %zu → %zu elements\n", 
+                            g_layer17_vision_captured + 1, old_size, g_layer17_vision_output.size());
+                    }
+                    
+                    g_layer17_vision_captured++;
+                    
+                    // 2개 모았으면 완료
+                    if (g_layer17_vision_captured == 2) {
+                        printf("  -> 🎉 All Layer 17 VISION ubatches collected! Total: %zu elements\n",
+                            g_layer17_vision_output.size());
+                    }
+                    fflush(stdout);
+                }
+                
+                // ===== Layer 17 Text 캡처 (기존 방식 유지) =====
+                bool need_l17_text = is_text_batch && !g_layer17_text_captured;
+                                
+                if (need_l17_text && g_layer17_output_copy) {
+                    printf("\n=== [CAPTURE START] Layer 17 TEXT batch (from copy) ===\n");
+                    
+                    printf("  -> Copy tensor pointer: %p\n", (void*)g_layer17_output_copy);
+                    printf("  -> Copy data pointer: %p\n", (void*)g_layer17_output_copy->data);
+                    
+                    int64_t n_elements = ggml_nelements(g_layer17_output_copy);
+                    printf("  -> Total elements: %lld (%.2f MB)\n",
+                        n_elements, (n_elements * sizeof(float)) / (1024.0 * 1024.0));
+                    fflush(stdout);
+                    
+                    std::vector<float> temp_output(n_elements);
+                    ggml_backend_tensor_get(g_layer17_output_copy, 
+                        temp_output.data(), 0, n_elements * sizeof(float));
+                    
+                    printf("  -> First 20 values: ");
+                    for (int i = 0; i < std::min(20, (int)n_elements); i++) {
+                        printf("%.4f ", temp_output[i]);
+                    }
+                    printf("\n");
+                    fflush(stdout);
+                    
+                    g_layer17_text_output = std::move(temp_output);
+                    g_layer17_text_captured = true;
+                    printf("  -> ✓ Layer 17 TEXT captured!\n");
+                    fflush(stdout);
+                }
+                
+                // ===== Layer 21 Vision 캡처 (Append 방식) =====
+                bool need_l21_vision = is_vision_batch && (g_layer21_vision_captured < 2);
+                                
+                if (need_l21_vision && g_layer21_output_copy) {
+                    printf("\n=== [CAPTURE START] Layer 21 VISION batch #%d (from copy) ===\n", 
+                        g_layer21_vision_captured + 1);
+                    
+                    printf("  -> Copy tensor pointer: %p\n", (void*)g_layer21_output_copy);
+                    printf("  -> Copy data pointer: %p\n", (void*)g_layer21_output_copy->data);
+                    
+                    int64_t n_elements = ggml_nelements(g_layer21_output_copy);
+                    printf("  -> Total elements: %lld (%.2f MB)\n",
+                        n_elements, (n_elements * sizeof(float)) / (1024.0 * 1024.0));
+                    fflush(stdout);
+                    
+                    std::vector<float> temp_output(n_elements);
+                    ggml_backend_tensor_get(g_layer21_output_copy, 
+                        temp_output.data(), 0, n_elements * sizeof(float));
+                    
+                    printf("  -> First 20 values: ");
+                    for (int i = 0; i < std::min(20, (int)n_elements); i++) {
+                        printf("%.4f ", temp_output[i]);
+                    }
+                    printf("\n");
+                    fflush(stdout);
+                    
+                    // Append 방식
+                    if (g_layer21_vision_captured == 0) {
+                        // 첫 번째 ubatch: 그냥 저장
+                        g_layer21_vision_output = std::move(temp_output);
+                        printf("  -> ✓ Layer 21 VISION batch #1 captured! Size: %zu elements\n", 
+                            g_layer21_vision_output.size());
+                    } else {
+                        // 두 번째+ ubatch: 기존 끝에 추가
+                        size_t old_size = g_layer21_vision_output.size();
+                        g_layer21_vision_output.insert(
+                            g_layer21_vision_output.end(),
+                            temp_output.begin(),
+                            temp_output.end()
+                        );
+                        printf("  -> ✓ Layer 21 VISION batch #%d appended! Size: %zu → %zu elements\n", 
+                            g_layer21_vision_captured + 1, old_size, g_layer21_vision_output.size());
+                    }
+                    
+                    g_layer21_vision_captured++;
+                    
+                    // 2개 모았으면 완료
+                    if (g_layer21_vision_captured == 2) {
+                        printf("  -> 🎉 All Layer 21 VISION ubatches collected! Total: %zu elements\n",
+                            g_layer21_vision_output.size());
+                    }
+                    fflush(stdout);
+                }
+                
+                // ===== Layer 21 Text 캡처 (기존 방식 유지) =====
+                bool need_l21_text = is_text_batch && !g_layer21_text_captured;
+                                
+                if (need_l21_text && g_layer21_output_copy) {
+                    printf("\n=== [CAPTURE START] Layer 21 TEXT batch (from copy) ===\n");
+                    
+                    printf("  -> Copy tensor pointer: %p\n", (void*)g_layer21_output_copy);
+                    printf("  -> Copy data pointer: %p\n", (void*)g_layer21_output_copy->data);
+                    
+                    int64_t n_elements = ggml_nelements(g_layer21_output_copy);
+                    printf("  -> Total elements: %lld (%.2f MB)\n",
+                        n_elements, (n_elements * sizeof(float)) / (1024.0 * 1024.0));
+                    fflush(stdout);
+                    
+                    std::vector<float> temp_output(n_elements);
+                    ggml_backend_tensor_get(g_layer21_output_copy, 
+                        temp_output.data(), 0, n_elements * sizeof(float));
+                    
+                    printf("  -> First 20 values: ");
+                    for (int i = 0; i < std::min(20, (int)n_elements); i++) {
+                        printf("%.4f ", temp_output[i]);
+                    }
+                    printf("\n");
+                    fflush(stdout);
+                    
+                    g_layer21_text_output = std::move(temp_output);
+                    g_layer21_text_captured = true;
+                    printf("  -> ✓ Layer 21 TEXT captured!\n");
+                    fflush(stdout);
+                }
+
+                // 모두 캡처 완료 확인
+                if (g_layer17_vision_captured == 2 && g_layer17_text_captured &&
+                    g_layer21_vision_captured == 2 && g_layer21_text_captured) {
+                    printf("\n╔═══════════════════════════════════════════════╗\n");
+                    printf("║  ✓ ALL LAYER OUTPUTS CAPTURED SUCCESSFULLY!  ║\n");
+                    printf("║  Disabling further capture...                 ║\n");
+                    printf("╚═══════════════════════════════════════════════╝\n\n");
+                    fflush(stdout);
+                    
+                    // ===== Angular Distance 계산 (Token-by-Token) =====
+                    printf("\n╔══════════════════════════════════════════════════════╗\n");
+                    printf("║       COMPUTING ANGULAR DISTANCES (Token-wise)      ║\n");
+                    printf("╚══════════════════════════════════════════════════════╝\n\n");
+                    
+                    // Helper lambda for angular distance (per token)
+                    auto compute_angular_distance_per_token = [](
+                        const std::vector<float>& a, 
+                        const std::vector<float>& b,
+                        int hidden_dim,
+                        int num_tokens
+                    ) -> float {
+                        if (a.size() != b.size() || a.empty()) {
+                            printf("  -> ERROR: Size mismatch or empty vectors!\n");
+                            return -1.0f;
+                        }
+                        
+                        if (a.size() != (size_t)(hidden_dim * num_tokens)) {
+                            printf("  -> ERROR: Size doesn't match hidden_dim * num_tokens!\n");
+                            return -1.0f;
+                        }
+                        
+                        double total_angular_dist = 0.0;
+                        int valid_tokens = 0;
+                        
+                        // Process each token separately
+                        for (int token_idx = 0; token_idx < num_tokens; token_idx++) {
+                            double dot_product = 0.0;
+                            double norm_a = 0.0;
+                            double norm_b = 0.0;
+                            
+                            // Compute norms and dot product for this token
+                            for (int dim = 0; dim < hidden_dim; dim++) {
+                                int idx = token_idx * hidden_dim + dim;
+                                double val_a = (double)a[idx];
+                                double val_b = (double)b[idx];
+                                
+                                dot_product += val_a * val_b;
+                                norm_a += val_a * val_a;
+                                norm_b += val_b * val_b;
+                            }
+                            
+                            norm_a = sqrt(norm_a);
+                            norm_b = sqrt(norm_b);
+                            
+                            if (norm_a < 1e-10 || norm_b < 1e-10) {
+                                continue; // Skip zero-norm tokens
+                            }
+                            
+                            // Cosine similarity
+                            double cosine_sim = dot_product / (norm_a * norm_b);
+                            
+                            // Clamp to [-1, 1] to avoid numerical issues with acos
+                            cosine_sim = fmax(-1.0, fmin(1.0, cosine_sim));
+                            
+                            // Angular distance = arccos(cosine_sim) / π
+                            double angular_dist = acos(cosine_sim) / M_PI;
+                            
+                            total_angular_dist += angular_dist;
+                            valid_tokens++;
+                        }
+                        
+                        if (valid_tokens == 0) {
+                            printf("  -> ERROR: No valid tokens!\n");
+                            return -1.0f;
+                        }
+                        
+                        // Return average angular distance across all tokens
+                        return (float)(total_angular_dist / valid_tokens);
+                    };
+                    
+                    // Vision tokens angular distance
+                    printf("Computing VISION tokens angular distance...\n");
+                    int vision_hidden_dim = 4096;
+                    int vision_num_tokens = g_layer17_vision_output.size() / vision_hidden_dim;
+                    printf("  -> Layer 17 vision: %zu elements = %d tokens × %d dims\n", 
+                        g_layer17_vision_output.size(), vision_num_tokens, vision_hidden_dim);
+                    printf("  -> Layer 21 vision: %zu elements = %d tokens × %d dims\n", 
+                        g_layer21_vision_output.size(), vision_num_tokens, vision_hidden_dim);
+                    fflush(stdout);
+                    
+                    float vision_angular_dist = compute_angular_distance_per_token(
+                        g_layer17_vision_output, 
+                        g_layer21_vision_output,
+                        vision_hidden_dim,
+                        vision_num_tokens
+                    );
+                    
+                    if (vision_angular_dist >= 0.0f) {
+                        printf("  -> ✓ VISION Angular Distance = %.6f\n", vision_angular_dist);
+                        printf("  -> ✓ VISION Cosine Similarity = %.6f\n", 
+                            cos(vision_angular_dist * M_PI));
+                    } else {
+                        printf("  -> ✗ VISION calculation failed!\n");
+                    }
+                    fflush(stdout);
+                    
+                    // Text tokens angular distance
+                    printf("\nComputing TEXT tokens angular distance...\n");
+                    int text_hidden_dim = 4096;
+                    int text_num_tokens = g_layer17_text_output.size() / text_hidden_dim;
+                    printf("  -> Layer 17 text: %zu elements = %d tokens × %d dims\n", 
+                        g_layer17_text_output.size(), text_num_tokens, text_hidden_dim);
+                    printf("  -> Layer 21 text: %zu elements = %d tokens × %d dims\n", 
+                        g_layer21_text_output.size(), text_num_tokens, text_hidden_dim);
+                    fflush(stdout);
+                    
+                    float text_angular_dist = compute_angular_distance_per_token(
+                        g_layer17_text_output, 
+                        g_layer21_text_output,
+                        text_hidden_dim,
+                        text_num_tokens
+                    );
+                    
+                    if (text_angular_dist >= 0.0f) {
+                        printf("  -> ✓ TEXT Angular Distance = %.6f\n", text_angular_dist);
+                        printf("  -> ✓ TEXT Cosine Similarity = %.6f\n", 
+                            cos(text_angular_dist * M_PI));
+                    } else {
+                        printf("  -> ✗ TEXT calculation failed!\n");
+                    }
+                    fflush(stdout);
+                    
+                    // V/T Ratio
+                    if (vision_angular_dist >= 0.0f && text_angular_dist >= 0.0f && text_angular_dist > 1e-10f) {
+                        float vt_ratio = vision_angular_dist / text_angular_dist;
+                        
+                        printf("\n╔══════════════════════════════════════════════════════╗\n");
+                        printf("║                   FINAL RESULTS                      ║\n");
+                        printf("╠══════════════════════════════════════════════════════╣\n");
+                        printf("║  Vision Angular Distance:  %.6f                  ║\n", vision_angular_dist);
+                        printf("║  Text Angular Distance:    %.6f                  ║\n", text_angular_dist);
+                        printf("║  ────────────────────────────────────────────────  ║\n");
+                        printf("║  V/T Ratio:                %.6f                  ║\n", vt_ratio);
+                        
+                        if (fabs(vt_ratio - 1.0f) < 0.1f) {
+                            printf("║  Status: ✓ Close to 1.0 (balanced)              ║\n");
+                        } else if (vt_ratio > 1.0f) {
+                            printf("║  Status: Vision changes MORE than text          ║\n");
+                        } else {
+                            printf("║  Status: Text changes MORE than vision          ║\n");
+                        }
+                        printf("╚══════════════════════════════════════════════════════╝\n\n");
+                        fflush(stdout);
+                    } else {
+                        printf("\n  -> ✗ Cannot compute V/T ratio (invalid distances)\n\n");
+                        fflush(stdout);
+                    }
+                    // ===== Angular Distance 계산 끝 =====
+                    
+                    g_enable_layer_capture = false;
+                }
+
+
+
+            }
+        }
+        // ===== 캡처 코드 끝 =====
+
+
 
         // plot the computation graph in dot format (for debugging purposes)
         //if (n_past%100 == 0) {
@@ -1256,8 +1633,12 @@ int llama_context::decode(const llama_batch & batch_inp) {
     // wait for the computation to finish (automatically done when obtaining the model output)
     //synchronize();
 
+    // printf("=== [DECODE END] ===\n\n");
+    // fflush(stdout);
+
     return 0;
 }
+
 
 //
 // output

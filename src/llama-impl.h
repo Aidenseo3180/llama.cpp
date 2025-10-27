@@ -61,3 +61,22 @@ std::string llama_format_tensor_shape(const struct ggml_tensor * t);
 std::string gguf_kv_to_str(const struct gguf_context * ctx_gguf, int i);
 
 #define LLAMA_TENSOR_NAME_FATTN "__fattn__"
+
+
+
+
+
+// Layer output capture
+extern std::vector<float> g_layer17_vision_output;
+extern std::vector<float> g_layer17_text_output;
+extern std::vector<float> g_layer21_vision_output;
+extern std::vector<float> g_layer21_text_output;
+extern bool g_enable_layer_capture;
+extern int g_layer17_vision_captured;  // bool → int로 변경!
+extern bool g_layer17_text_captured;
+extern int g_layer21_vision_captured;  // bool → int로 변경!
+extern bool g_layer21_text_captured;
+
+// 별도로 복사된 tensor들
+extern ggml_tensor * g_layer17_output_copy;
+extern ggml_tensor * g_layer21_output_copy;
