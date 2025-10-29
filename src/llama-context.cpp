@@ -1456,6 +1456,55 @@ int llama_context::decode(const llama_batch & batch_inp) {
                         printf("  -> ✗ TEXT calculation failed!\n");
                     }
                     fflush(stdout);
+
+
+                    // ===== COMBINED tokens angular distance =====
+                    printf("\nComputing COMBINED (Vision+Text) tokens angular distance...\n");
+
+                    // Layer 17 combined 만들기
+                    std::vector<float> layer17_combined;
+                    layer17_combined.reserve(g_layer17_vision_output.size() + g_layer17_text_output.size());
+                    layer17_combined.insert(layer17_combined.end(), 
+                                            g_layer17_vision_output.begin(), 
+                                            g_layer17_vision_output.end());
+                    layer17_combined.insert(layer17_combined.end(), 
+                                            g_layer17_text_output.begin(), 
+                                            g_layer17_text_output.end());
+
+                    // Layer 21 combined 만들기
+                    std::vector<float> layer21_combined;
+                    layer21_combined.reserve(g_layer21_vision_output.size() + g_layer21_text_output.size());
+                    layer21_combined.insert(layer21_combined.end(), 
+                                            g_layer21_vision_output.begin(), 
+                                            g_layer21_vision_output.end());
+                    layer21_combined.insert(layer21_combined.end(), 
+                                            g_layer21_text_output.begin(), 
+                                            g_layer21_text_output.end());
+
+                    int combined_hidden_dim = 4096;
+                    int combined_num_tokens = layer17_combined.size() / combined_hidden_dim;
+
+                    printf("  -> Layer 17 combined: %zu elements = %d tokens × %d dims\n",
+                        layer17_combined.size(), combined_num_tokens, combined_hidden_dim);
+                    printf("  -> Layer 21 combined: %zu elements = %d tokens × %d dims\n",
+                        layer21_combined.size(), combined_num_tokens, combined_hidden_dim);
+                    fflush(stdout);
+
+                    float combined_angular_dist = compute_angular_distance_per_token(
+                        layer17_combined,
+                        layer21_combined,
+                        combined_hidden_dim,
+                        combined_num_tokens
+                    );
+
+                    if (combined_angular_dist >= 0.0f) {
+                        printf("  -> ✓ COMBINED Angular Distance = %.6f\n", combined_angular_dist);
+                        printf("  -> ✓ COMBINED Cosine Similarity = %.6f\n", cos(combined_angular_dist * M_PI));
+                    } else {
+                        printf("  -> ✗ COMBINED calculation failed!\n");
+                    }
+                    fflush(stdout);
+
                     
                     // V/T Ratio
                     if (vision_angular_dist >= 0.0f && text_angular_dist >= 0.0f && text_angular_dist > 1e-10f) {
@@ -1466,6 +1515,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
                         printf("╠══════════════════════════════════════════════════════╣\n");
                         printf("║  Vision Angular Distance:  %.6f                  ║\n", vision_angular_dist);
                         printf("║  Text Angular Distance:    %.6f                  ║\n", text_angular_dist);
+                        printf("║  Combined Angular Distance:  %.6f                ║\n", combined_angular_dist);  // 추가!
                         printf("║  ────────────────────────────────────────────────  ║\n");
                         printf("║  V/T Ratio:                %.6f                  ║\n", vt_ratio);
                         
