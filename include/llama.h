@@ -1395,6 +1395,26 @@ extern "C" {
             ggml_opt_epoch_callback   callback_train,
             ggml_opt_epoch_callback   callback_eval);
 
+
+    enum llama_skip_mode {
+        LLAMA_SKIP_NONE   = 0,  // Original, no skip
+        LLAMA_SKIP_24_27  = 1,  // Skip layers 24-27, use merged weight at layer 23
+        LLAMA_SKIP_23_30  = 2,  // Skip layers 23-30, use merged weight at layer 22
+    };
+
+    // API 함수들 (파일 끝부분에 추가)
+
+    // Set skip mode for next generation (must be called before generation starts)
+    LLAMA_API void llama_set_generation_skip_mode(
+        struct llama_context * ctx, 
+        enum llama_skip_mode mode);
+
+    // End generation and reset to original graph
+    LLAMA_API void llama_end_generation(struct llama_context * ctx);
+
+    // Get current skip mode
+    LLAMA_API enum llama_skip_mode llama_get_skip_mode(struct llama_context * ctx);
+    
 #ifdef __cplusplus
 }
 #endif

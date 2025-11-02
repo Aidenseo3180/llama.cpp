@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ggml.h" // for ggml_log_level
+#include "llama.h"
 
 #include <string>
 #include <vector>
@@ -80,3 +81,21 @@ extern bool g_layer21_text_captured;
 // 별도로 복사된 tensor들
 extern ggml_tensor * g_layer17_output_copy;
 extern ggml_tensor * g_layer21_output_copy;
+
+
+// Skip pattern definition
+struct llama_skip_pattern {
+    const char* weight_file;
+    int skip_start;       // First layer to skip
+    int skip_end;         // Last layer to skip (inclusive)
+    int replace_idx;      // Layer index where merged weight is used
+    ggml_tensor* merged_weight;
+};
+
+// Global skip patterns
+extern llama_skip_pattern g_skip_patterns[3];
+extern bool g_skip_weights_loaded;
+
+// Load/cleanup functions
+void llama_load_skip_weights();
+void llama_cleanup_skip_weights();

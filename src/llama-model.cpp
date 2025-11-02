@@ -6371,28 +6371,104 @@ ggml_tensor * llama_model::get_rope_factors(const llama_cparams & cparams, int i
 }
 
 
+
+// llama.cpp - struct llm_build_llama
+
 struct llm_build_llama : public llm_graph_context {
-    llm_build_llama(const llama_model & model, const llm_graph_params & params) : llm_graph_context(params) {
+    llm_build_llama(const llama_model & model, const llm_graph_params & params) 
+        : llm_graph_context(params) {
+
+
+        // llm_build_llama 생성자에서:
+
+        // printf("🔍 Original ffn_down[23]:\n");
+        // printf("   ne = [%lld, %lld, %lld, %lld]\n",
+        //     model.layers[23].ffn_down->ne[0],
+        //     model.layers[23].ffn_down->ne[1],
+        //     model.layers[23].ffn_down->ne[2],
+        //     model.layers[23].ffn_down->ne[3]);
+        // printf("   nb = [%zu, %zu, %zu, %zu]\n",
+        //     model.layers[23].ffn_down->nb[0],
+        //     model.layers[23].ffn_down->nb[1],
+        //     model.layers[23].ffn_down->nb[2],
+        //     model.layers[23].ffn_down->nb[3]);
+        // printf("   type = %d\n", model.layers[23].ffn_down->type);
+        // printf("   buffer = %p\n", model.layers[23].ffn_down->buffer);
+
+        // if (g_skip_patterns[1].merged_weight) {
+        //     printf("🔍 Merged weight[1]:\n");
+        //     printf("   ne = [%lld, %lld, %lld, %lld]\n",
+        //         g_skip_patterns[1].merged_weight->ne[0],
+        //         g_skip_patterns[1].merged_weight->ne[1],
+        //         g_skip_patterns[1].merged_weight->ne[2],
+        //         g_skip_patterns[1].merged_weight->ne[3]);
+        //     printf("   nb = [%zu, %zu, %zu, %zu]\n",
+        //         g_skip_patterns[1].merged_weight->nb[0],
+        //         g_skip_patterns[1].merged_weight->nb[1],
+        //         g_skip_patterns[1].merged_weight->nb[2],
+        //         g_skip_patterns[1].merged_weight->nb[3]);
+        //     printf("   type = %d\n", g_skip_patterns[1].merged_weight->type);
+        //     printf("   buffer = %p\n", g_skip_patterns[1].merged_weight->buffer);
+        // }
+        
         const int64_t n_embd_head = hparams.n_embd_head_v;
 
         GGML_ASSERT(n_embd_head == hparams.n_embd_head_k);
         GGML_ASSERT(n_embd_head == hparams.n_rot);
+
+        // ========================================================================
+        // ReplaceMe: Load skip weights (once)
+        // ========================================================================
+        static bool weights_initialized = false;
+        if (!weights_initialized) {
+            llama_load_skip_weights();
+            weights_initialized = true;
+        }
+        
+        // Get active pattern
+        const auto & active_pattern = g_skip_patterns[params.skip_mode];
+        bool use_skip = (params.skip_mode != LLAMA_SKIP_NONE);
+        
+        if (use_skip) {
+            LLAMA_LOG_DEBUG("Building graph with skip mode %d (skip layers %d-%d, replace at %d)\n",
+                           params.skip_mode,
+                           active_pattern.skip_start,
+                           active_pattern.skip_end,
+                           active_pattern.replace_idx);
+            
+            if (!active_pattern.merged_weight) {
+                LLAMA_LOG_WARN("Skip mode %d requested but weights not loaded! Using original graph.\n",
+                              params.skip_mode);
+                use_skip = false;
+            }
+        }
+        // ========================================================================
 
         ggml_tensor * cur;
         ggml_tensor * inpL;
 
         inpL = build_inp_embd(model.tok_embd);
 
-        // inp_pos - contains the positions
         ggml_tensor * inp_pos = build_inp_pos();
-
         auto * inp_attn = build_attn_inp_kv();
 
-        const float kq_scale = hparams.f_attention_scale == 0.0f ? 1.0f/sqrtf(float(n_embd_head)) : hparams.f_attention_scale;
-
+        const float kq_scale = hparams.f_attention_scale == 0.0f ? 
+            1.0f/sqrtf(float(n_embd_head)) : hparams.f_attention_scale;
+            
         ggml_tensor * inp_out_ids = build_inp_out_ids();
 
         for (int il = 0; il < n_layer; ++il) {
+            // ====================================================================
+            // ReplaceMe: Skip layers check
+            // ====================================================================
+            if (use_skip && 
+                il >= active_pattern.skip_start && 
+                il <= active_pattern.skip_end) {
+                LLAMA_LOG_DEBUG("  Skipping layer %d\n", il);
+                continue;
+            }
+            // ====================================================================
+            
             ggml_tensor * inpSA = inpL;
 
             // norm
@@ -6403,10 +6479,8 @@ struct llm_build_llama : public llm_graph_context {
 
             // self-attention
             {
-                // rope freq factors for llama3; may return nullptr for llama2 and other models
                 ggml_tensor * rope_factors = model.get_rope_factors(cparams, il);
 
-                // compute Q and K and RoPE them
                 ggml_tensor * Qcur = build_lora_mm(model.layers[il].wq, cur);
                 cb(Qcur, "Qcur", il);
                 if (model.layers[il].bq) {
@@ -6449,7 +6523,6 @@ struct llm_build_llama : public llm_graph_context {
                 cb(Vcur, "Vcur", il);
 
                 if (hparams.use_kq_norm) {
-                    // Llama4TextL2Norm
                     Qcur = ggml_rms_norm(ctx0, Qcur, hparams.f_norm_rms_eps);
                     Kcur = ggml_rms_norm(ctx0, Kcur, hparams.f_norm_rms_eps);
                     cb(Qcur, "Qcur_normed", il);
@@ -6470,18 +6543,30 @@ struct llm_build_llama : public llm_graph_context {
             ggml_tensor * ffn_inp = ggml_add(ctx0, cur, inpSA);
             cb(ffn_inp, "ffn_inp", il);
 
-            // feed-forward network (non-MoE)
+            // feed-forward network
             if (model.layers[il].ffn_gate_inp == nullptr) {
-
                 cur = build_norm(ffn_inp,
                         model.layers[il].ffn_norm, NULL,
                         LLM_NORM_RMS, il);
                 cb(cur, "ffn_norm", il);
 
+                // ============================================================
+                // ReplaceMe: Use merged weight if this is the replace layer
+                // ============================================================
+                ggml_tensor* ffn_down = model.layers[il].ffn_down;
+                
+                if (use_skip && 
+                    il == active_pattern.replace_idx && 
+                    active_pattern.merged_weight != nullptr) {
+                    ffn_down = active_pattern.merged_weight;
+                    LLAMA_LOG_DEBUG("  Layer %d: using merged weight\n", il);
+                }
+                // ============================================================
+
                 cur = build_ffn(cur,
                         model.layers[il].ffn_up,   model.layers[il].ffn_up_b,   NULL,
                         model.layers[il].ffn_gate, model.layers[il].ffn_gate_b, NULL,
-                        model.layers[il].ffn_down, model.layers[il].ffn_down_b, NULL,
+                        ffn_down, model.layers[il].ffn_down_b, NULL,
                         NULL,
                         LLM_FFN_SILU, LLM_FFN_PAR, il);
                 cb(cur, "ffn_out", il);
@@ -6512,42 +6597,6 @@ struct llm_build_llama : public llm_graph_context {
             cur = build_cvec(cur, il);
             cb(cur, "l_out", il);
 
-            
-
-            // ===== Layer output 복사본 생성 =====
-            if (g_enable_layer_capture) {
-                if (il == 16) { // Layer 17
-                    // 별도의 메모리 공간에 복사본 생성
-                    g_layer17_output_copy = ggml_dup(ctx0, cur);
-                    ggml_set_name(g_layer17_output_copy, "layer_17_output_copy");
-                    ggml_set_output(g_layer17_output_copy);  // output으로 표시해서 유지
-                    
-                    printf("=== [GRAPH BUILD] Layer 17 copy created (original=%p, copy=%p) ===\n", 
-                        (void*)cur, (void*)g_layer17_output_copy);
-                    fflush(stdout);
-                    
-                    cb(g_layer17_output_copy, "layer_17_copy", il);
-                    
-                    // Graph에 추가
-                    ggml_build_forward_expand(gf, g_layer17_output_copy);
-                }
-                if (il == 20) { // Layer 21
-                    g_layer21_output_copy = ggml_dup(ctx0, cur);
-                    ggml_set_name(g_layer21_output_copy, "layer_21_output_copy");
-                    ggml_set_output(g_layer21_output_copy);
-                    
-                    printf("=== [GRAPH BUILD] Layer 21 copy created (original=%p, copy=%p) ===\n", 
-                        (void*)cur, (void*)g_layer21_output_copy);
-                    fflush(stdout);
-                    
-                    cb(g_layer21_output_copy, "layer_21_copy", il);
-                    
-                    ggml_build_forward_expand(gf, g_layer21_output_copy);
-                }
-            }
-            // =====
-
-
             // input for next layer
             inpL = cur;
         }
@@ -6570,7 +6619,6 @@ struct llm_build_llama : public llm_graph_context {
         ggml_build_forward_expand(gf, cur);
     }
 };
-
 
 
 struct llm_build_llama_iswa : public llm_graph_context {

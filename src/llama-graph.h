@@ -418,6 +418,9 @@ struct llm_graph_params {
 
     llm_graph_result * res;
 
+    llama_skip_mode skip_mode = LLAMA_SKIP_NONE;  // 추가!
+
+
     // return true if the "other" params would result in a graph with the same topology as with the current params
     //   having the same topology allows us to reuse the graph in some cases
     bool allow_reuse(const llm_graph_params & other) const {
@@ -459,7 +462,9 @@ struct llm_graph_params {
             cvec      == other.cvec  &&
             loras     == other.loras &&
             cross     == other.cross &&
-            n_outputs == other.n_outputs;
+            n_outputs == other.n_outputs &&
+            skip_mode == other.skip_mode;
+            
     }
 };
 

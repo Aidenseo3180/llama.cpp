@@ -181,6 +181,13 @@ struct llama_context {
             int64_t                          ndata_in_loop,
             int64_t                          t_loop_start);
 
+
+
+    llama_skip_mode skip_mode = LLAMA_SKIP_NONE;              // Current active mode
+    llama_skip_mode generation_skip_mode = LLAMA_SKIP_NONE;   // User-configured mode for generation
+    bool is_generating = false;                                // Generation state
+    
+
 private:
     //
     // output
