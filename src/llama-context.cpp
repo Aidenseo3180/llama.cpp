@@ -990,6 +990,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
 
 
     {
+        // TODO: Use Table HERE!!!!!!!!!!!!!!
         bool is_prefill = (n_tokens_all > 1);
         
         if (is_prefill) {
@@ -999,13 +1000,17 @@ int llama_context::decode(const llama_batch & batch_inp) {
         } else {
             if (!is_generating) {
                 if (1 < 100) {
-                    skip_mode = LLAMA_SKIP_23_30;
+                    printf("using LLAMA_SKIP_25_28");
+                    skip_mode = LLAMA_SKIP_25_28;
                 } else {
-                    skip_mode = LLAMA_SKIP_24_27;
+                    skip_mode = LLAMA_SKIP_25_28;
                 }
                 is_generating = true;
             }
         }
+
+        // skip_mode = LLAMA_SKIP_25_28;
+        // is_generating = false;
     }
 
     if (output_all) {

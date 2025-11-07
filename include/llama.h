@@ -1398,7 +1398,7 @@ extern "C" {
 
     enum llama_skip_mode {
         LLAMA_SKIP_NONE   = 0,  // Original, no skip
-        LLAMA_SKIP_24_27  = 1,  // Skip layers 24-27, use merged weight at layer 23
+        LLAMA_SKIP_25_28  = 1,  // Skip layers 24-27, use merged weight at layer 23
         LLAMA_SKIP_23_30  = 2,  // Skip layers 23-30, use merged weight at layer 22
     };
 

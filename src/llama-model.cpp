@@ -6377,39 +6377,6 @@ ggml_tensor * llama_model::get_rope_factors(const llama_cparams & cparams, int i
 struct llm_build_llama : public llm_graph_context {
     llm_build_llama(const llama_model & model, const llm_graph_params & params) 
         : llm_graph_context(params) {
-
-
-        // llm_build_llama 생성자에서:
-
-        // printf("🔍 Original ffn_down[23]:\n");
-        // printf("   ne = [%lld, %lld, %lld, %lld]\n",
-        //     model.layers[23].ffn_down->ne[0],
-        //     model.layers[23].ffn_down->ne[1],
-        //     model.layers[23].ffn_down->ne[2],
-        //     model.layers[23].ffn_down->ne[3]);
-        // printf("   nb = [%zu, %zu, %zu, %zu]\n",
-        //     model.layers[23].ffn_down->nb[0],
-        //     model.layers[23].ffn_down->nb[1],
-        //     model.layers[23].ffn_down->nb[2],
-        //     model.layers[23].ffn_down->nb[3]);
-        // printf("   type = %d\n", model.layers[23].ffn_down->type);
-        // printf("   buffer = %p\n", model.layers[23].ffn_down->buffer);
-
-        // if (g_skip_patterns[1].merged_weight) {
-        //     printf("🔍 Merged weight[1]:\n");
-        //     printf("   ne = [%lld, %lld, %lld, %lld]\n",
-        //         g_skip_patterns[1].merged_weight->ne[0],
-        //         g_skip_patterns[1].merged_weight->ne[1],
-        //         g_skip_patterns[1].merged_weight->ne[2],
-        //         g_skip_patterns[1].merged_weight->ne[3]);
-        //     printf("   nb = [%zu, %zu, %zu, %zu]\n",
-        //         g_skip_patterns[1].merged_weight->nb[0],
-        //         g_skip_patterns[1].merged_weight->nb[1],
-        //         g_skip_patterns[1].merged_weight->nb[2],
-        //         g_skip_patterns[1].merged_weight->nb[3]);
-        //     printf("   type = %d\n", g_skip_patterns[1].merged_weight->type);
-        //     printf("   buffer = %p\n", g_skip_patterns[1].merged_weight->buffer);
-        // }
         
         const int64_t n_embd_head = hparams.n_embd_head_v;
 
@@ -6430,14 +6397,14 @@ struct llm_build_llama : public llm_graph_context {
         bool use_skip = (params.skip_mode != LLAMA_SKIP_NONE);
         
         if (use_skip) {
-            LLAMA_LOG_DEBUG("Building graph with skip mode %d (skip layers %d-%d, replace at %d)\n",
+            printf("Building graph with skip mode %d (skip layers %d-%d, replace at %d)\n",
                            params.skip_mode,
                            active_pattern.skip_start,
                            active_pattern.skip_end,
                            active_pattern.replace_idx);
             
             if (!active_pattern.merged_weight) {
-                LLAMA_LOG_WARN("Skip mode %d requested but weights not loaded! Using original graph.\n",
+                printf("Skip mode %d requested but weights not loaded! Using original graph.\n",
                               params.skip_mode);
                 use_skip = false;
             }
@@ -6464,7 +6431,7 @@ struct llm_build_llama : public llm_graph_context {
             if (use_skip && 
                 il >= active_pattern.skip_start && 
                 il <= active_pattern.skip_end) {
-                LLAMA_LOG_DEBUG("  Skipping layer %d\n", il);
+                // printf("  Skipping layer %d\n", il);
                 continue;
             }
             // ====================================================================
@@ -6550,26 +6517,32 @@ struct llm_build_llama : public llm_graph_context {
                         LLM_NORM_RMS, il);
                 cb(cur, "ffn_norm", il);
 
-                // ============================================================
-                // ReplaceMe: Use merged weight if this is the replace layer
-                // ============================================================
-                ggml_tensor* ffn_down = model.layers[il].ffn_down;
-                
-                if (use_skip && 
-                    il == active_pattern.replace_idx && 
-                    active_pattern.merged_weight != nullptr) {
-                    ffn_down = active_pattern.merged_weight;
-                    LLAMA_LOG_DEBUG("  Layer %d: using merged weight\n", il);
-                }
-                // ============================================================
-
                 cur = build_ffn(cur,
                         model.layers[il].ffn_up,   model.layers[il].ffn_up_b,   NULL,
                         model.layers[il].ffn_gate, model.layers[il].ffn_gate_b, NULL,
-                        ffn_down, model.layers[il].ffn_down_b, NULL,
+                        model.layers[il].ffn_down, model.layers[il].ffn_down_b, NULL,
                         NULL,
                         LLM_FFN_SILU, LLM_FFN_PAR, il);
                 cb(cur, "ffn_out", il);
+
+
+                // ============================================================
+                // 🎯 ReplaceMe: MLP output에 Transform 적용 (replace_idx에서만)
+                // ============================================================
+                if (use_skip && 
+                    il == active_pattern.replace_idx && 
+                    active_pattern.merged_weight != nullptr) {
+                    
+                    printf("  Layer %d: applying transform\n", il);
+                    
+                    // cur: [n_tokens, 4096]
+                    // merged_weight: [4096, 4096] (transform matrix!)
+                    
+                    // 🔴 여기가 핵심: cur @ T
+                    cur = build_lora_mm(active_pattern.merged_weight, cur);
+                    cb(cur, "ffn_out_transformed", il);
+                }
+
             } else {
                 // MoE branch
                 cur = build_norm(ffn_inp,

@@ -34,17 +34,17 @@ llama_skip_pattern g_skip_patterns[3] = {
         /*.replace_idx   =*/ -1,
         /*.merged_weight =*/ nullptr
     },
-    // LLAMA_SKIP_24_27
+    // LLAMA_SKIP_25-28 (keep in mind, this layer index is when you start from 1. If from 0, 24-27. So, replace idx 23)
     {
-        /*.weight_file   =*/ "merged_down_proj_layer23_q8_0.bin",
-        /*.skip_start    =*/ 24,
-        /*.skip_end      =*/ 27,
-        /*.replace_idx   =*/ 23,
+        /*.weight_file   =*/ "transform_layer25_to_layer28_fp16.bin",
+        /*.skip_start    =*/ 25,
+        /*.skip_end      =*/ 28,
+        /*.replace_idx   =*/ 24,
         /*.merged_weight =*/ nullptr
     },
     // LLAMA_SKIP_23_31
     {
-        /*.weight_file   =*/ "merged_down_proj_layer22_q8_0.bin",
+        /*.weight_file   =*/ "merged_down_proj_layer23_to_layer30_q8_0.bin",
         /*.skip_start    =*/ 23,
         /*.skip_end      =*/ 30,
         /*.replace_idx   =*/ 22,
@@ -53,6 +53,7 @@ llama_skip_pattern g_skip_patterns[3] = {
 };
 
 bool g_skip_weights_loaded = false;
+
 
 // Load skip weights from binary files
 void llama_load_skip_weights() {
@@ -73,7 +74,7 @@ void llama_load_skip_weights() {
         }
         printf("✅ Opened: %s\n", pattern.weight_file);
         
-        // Read dimensions [rows, cols] = [4096, 14336]
+        // Read dimensions [rows, cols] = [4096, 4096]
         int64_t dims[2];
         size_t read_size = fread(dims, sizeof(int64_t), 2, f);
         if (read_size != 2) {
@@ -82,14 +83,12 @@ void llama_load_skip_weights() {
             continue;
         }
         
-        // Calculate Q8_0 data size
-        const int QK8_0 = 32;
+        // 🔴 FP16: Calculate data size (simple!)
         size_t n_elements = dims[0] * dims[1];
-        size_t n_blocks = (n_elements + QK8_0 - 1) / QK8_0;
-        size_t byte_size = n_blocks * (sizeof(uint16_t) + QK8_0);
+        size_t byte_size = n_elements * sizeof(ggml_fp16_t);  // 2 bytes per element
         
         // Allocate and read data
-        uint8_t* data = (uint8_t*)aligned_alloc(GGML_MEM_ALIGN, byte_size);
+        ggml_fp16_t* data = (ggml_fp16_t*)aligned_alloc(GGML_MEM_ALIGN, byte_size);
         if (!data) {
             LLAMA_LOG_ERROR("Failed to allocate %zu bytes for %s\n", 
                            byte_size, pattern.weight_file);
@@ -115,7 +114,8 @@ void llama_load_skip_weights() {
             continue;
         }
         
-        pattern.merged_weight->type = GGML_TYPE_Q8_0;
+        // 🔴 FP16 type
+        pattern.merged_weight->type = GGML_TYPE_F16;
         pattern.merged_weight->data = data;
         ggml_backend_buffer_t buf = ggml_backend_cpu_buffer_from_ptr(
             data, 
@@ -123,19 +123,18 @@ void llama_load_skip_weights() {
         );
         pattern.merged_weight->buffer = buf;
         
-        // Set dimensions (assuming dims = [4096, 14336])
-        pattern.merged_weight->ne[0] = dims[1];  // 14336
-        pattern.merged_weight->ne[1] = dims[0];  // 4096
+        // Set dimensions (dims = [4096, 4096])
+        pattern.merged_weight->ne[0] = dims[0];  // 4096
+        pattern.merged_weight->ne[1] = dims[1];  // 4096
         pattern.merged_weight->ne[2] = 1;
         pattern.merged_weight->ne[3] = 1;
         
-        // Calculate strides for Q8_0
-        size_t type_size = ggml_type_size(GGML_TYPE_Q8_0);
-        size_t blck_size = ggml_blck_size(GGML_TYPE_Q8_0);
+        // 🔴 Calculate strides for FP16
+        size_t type_size = sizeof(ggml_fp16_t);  // 2 bytes
         
         pattern.merged_weight->nb[0] = type_size;
         pattern.merged_weight->nb[1] = pattern.merged_weight->nb[0] * 
-            (pattern.merged_weight->ne[0] / blck_size);
+            pattern.merged_weight->ne[0];
         pattern.merged_weight->nb[2] = pattern.merged_weight->nb[1] * 
             pattern.merged_weight->ne[1];
         pattern.merged_weight->nb[3] = pattern.merged_weight->nb[2] * 
@@ -146,15 +145,19 @@ void llama_load_skip_weights() {
         pattern.merged_weight->src[0] = nullptr;
         pattern.merged_weight->src[1] = nullptr;
         
-        LLAMA_LOG_INFO("  Loaded pattern %d: %s [%lld, %lld] - skip layers %d-%d\n",
+        LLAMA_LOG_INFO("  Loaded pattern %d: %s [%lld, %lld] (FP16) - skip layers %d-%d\n",
                       i, pattern.weight_file, dims[0], dims[1],
                       pattern.skip_start, pattern.skip_end);
 
         printf("  ✅ Loaded successfully\n");
+        printf("  -> Loaded tensor dims: ne[0]=%lld, ne[1]=%lld\n",
+               pattern.merged_weight->ne[0],
+               pattern.merged_weight->ne[1]);
     }
     
     g_skip_weights_loaded = true;
 }
+
 
 // Cleanup skip weights
 void llama_cleanup_skip_weights() {
