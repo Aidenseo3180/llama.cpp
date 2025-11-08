@@ -64,7 +64,15 @@ std::string gguf_kv_to_str(const struct gguf_context * ctx_gguf, int i);
 #define LLAMA_TENSOR_NAME_FATTN "__fattn__"
 
 
+#include <atomic>
+#include <thread>
+#include <fstream>
 
+// Throughput monitoring
+extern std::atomic<int> g_token_count;
+extern std::atomic<bool> g_monitoring;
+extern std::thread g_monitor_thread;
+extern std::ofstream g_csv;
 
 
 // Layer output capture
