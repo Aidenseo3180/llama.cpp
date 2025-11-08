@@ -182,7 +182,7 @@ static inline int compute_pid(double current_temp, double dt) {
     
     return index_delta;
 }
-
+ 
 // PID 기반 thermal control
 static inline void thermal_control_check() {
     static bool initialized = false;
