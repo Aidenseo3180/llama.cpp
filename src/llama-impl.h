@@ -93,7 +93,7 @@ struct llama_skip_pattern {
 };
 
 // Global skip patterns
-extern llama_skip_pattern g_skip_patterns[3];
+extern llama_skip_pattern g_skip_patterns[4];
 extern bool g_skip_weights_loaded;
 
 // Load/cleanup functions

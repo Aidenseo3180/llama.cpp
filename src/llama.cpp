@@ -25,7 +25,7 @@
 #endif
 
 
-llama_skip_pattern g_skip_patterns[3] = {
+llama_skip_pattern g_skip_patterns[4] = {
     // LLAMA_SKIP_NONE
     {
         /*.weight_file   =*/ nullptr,
@@ -42,9 +42,17 @@ llama_skip_pattern g_skip_patterns[3] = {
         /*.replace_idx   =*/ 24,
         /*.merged_weight =*/ nullptr
     },
-    // LLAMA_SKIP_23_31
+    // LLAMA_SKIP_23_28
     {
-        /*.weight_file   =*/ "merged_down_proj_layer23_to_layer30_q8_0.bin",
+        /*.weight_file   =*/ "transform_layer23_to_layer28_fp16.bin",
+        /*.skip_start    =*/ 23,
+        /*.skip_end      =*/ 38,
+        /*.replace_idx   =*/ 22,
+        /*.merged_weight =*/ nullptr
+    },
+    // LLAMA_SKIP_23_30
+    {
+        /*.weight_file   =*/ "transform_layer23_to_layer30_fp16.bin",
         /*.skip_start    =*/ 23,
         /*.skip_end      =*/ 30,
         /*.replace_idx   =*/ 22,
@@ -63,7 +71,7 @@ void llama_load_skip_weights() {
     
     LLAMA_LOG_INFO("Loading ReplaceMe skip weights...\n");
     
-    for (int i = 1; i < 3; i++) {  // Skip NONE (index 0)
+    for (int i = 1; i < 4; i++) {  // Skip NONE (index 0)
         auto & pattern = g_skip_patterns[i];
         
         FILE* f = fopen(pattern.weight_file, "rb");
@@ -161,7 +169,7 @@ void llama_load_skip_weights() {
 
 // Cleanup skip weights
 void llama_cleanup_skip_weights() {
-    for (int i = 1; i < 3; i++) {
+    for (int i = 1; i < 4; i++) {
         if (g_skip_patterns[i].merged_weight) {
             if (g_skip_patterns[i].merged_weight->data) {
                 free(g_skip_patterns[i].merged_weight->data);

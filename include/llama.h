@@ -1398,8 +1398,9 @@ extern "C" {
 
     enum llama_skip_mode {
         LLAMA_SKIP_NONE   = 0,  // Original, no skip
-        LLAMA_SKIP_25_28  = 1,  // Skip layers 24-27, use merged weight at layer 23
-        LLAMA_SKIP_23_30  = 2,  // Skip layers 23-30, use merged weight at layer 22
+        LLAMA_SKIP_25_28  = 1,  // Skip layers 24-27, use merged weight at layer 24 (4 layers)
+        LLAMA_SKIP_23_28  = 2,  // Skip layers 23-28, use merged weight at layer 22 (6 layers)
+        LLAMA_SKIP_23_30  = 3,  // Skip layers 23-30, use merged weight at layer 22 (8 layers)
     };
 
     // API 함수들 (파일 끝부분에 추가)
