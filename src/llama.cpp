@@ -17,9 +17,171 @@
 #include <cstring>
 #include <ctime>
 
+#include "llama-context.h"
+
+
 #if defined(_MSC_VER)
 #pragma warning(disable: 4244 4267) // possible loss of data
 #endif
+
+
+llama_skip_pattern g_skip_patterns[4] = {
+    // LLAMA_SKIP_NONE
+    {
+        /*.weight_file   =*/ nullptr,
+        /*.skip_start    =*/ -1,
+        /*.skip_end      =*/ -1,
+        /*.replace_idx   =*/ -1,
+        /*.merged_weight =*/ nullptr
+    },
+    // LLAMA_SKIP_25-28 (keep in mind, this layer index is when you start from 1. If from 0, 24-27. So, replace idx 23)
+    {
+        /*.weight_file   =*/ "transform_layer25_to_layer28_fp16.bin",
+        /*.skip_start    =*/ 25,
+        /*.skip_end      =*/ 28,
+        /*.replace_idx   =*/ 24,
+        /*.merged_weight =*/ nullptr
+    },
+    // LLAMA_SKIP_23_28
+    {
+        /*.weight_file   =*/ "transform_layer23_to_layer28_fp16.bin",
+        /*.skip_start    =*/ 23,
+        /*.skip_end      =*/ 38,
+        /*.replace_idx   =*/ 22,
+        /*.merged_weight =*/ nullptr
+    },
+    // LLAMA_SKIP_23_30
+    {
+        /*.weight_file   =*/ "transform_layer23_to_layer30_fp16.bin",
+        /*.skip_start    =*/ 23,
+        /*.skip_end      =*/ 30,
+        /*.replace_idx   =*/ 22,
+        /*.merged_weight =*/ nullptr
+    },
+};
+
+bool g_skip_weights_loaded = false;
+
+
+// Load skip weights from binary files
+void llama_load_skip_weights() {
+    if (g_skip_weights_loaded) {
+        return;
+    }
+    
+    LLAMA_LOG_INFO("Loading ReplaceMe skip weights...\n");
+    
+    for (int i = 1; i < 4; i++) {  // Skip NONE (index 0)
+        auto & pattern = g_skip_patterns[i];
+        
+        FILE* f = fopen(pattern.weight_file, "rb");
+        if (!f) {
+            LLAMA_LOG_WARN("Failed to load %s, pattern %d disabled\n", 
+                          pattern.weight_file, i);
+            continue;
+        }
+        printf("✅ Opened: %s\n", pattern.weight_file);
+        
+        // Read dimensions [rows, cols] = [4096, 4096]
+        int64_t dims[2];
+        size_t read_size = fread(dims, sizeof(int64_t), 2, f);
+        if (read_size != 2) {
+            LLAMA_LOG_ERROR("Failed to read dimensions from %s\n", pattern.weight_file);
+            fclose(f);
+            continue;
+        }
+        
+        // 🔴 FP16: Calculate data size (simple!)
+        size_t n_elements = dims[0] * dims[1];
+        size_t byte_size = n_elements * sizeof(ggml_fp16_t);  // 2 bytes per element
+        
+        // Allocate and read data
+        ggml_fp16_t* data = (ggml_fp16_t*)aligned_alloc(GGML_MEM_ALIGN, byte_size);
+        if (!data) {
+            LLAMA_LOG_ERROR("Failed to allocate %zu bytes for %s\n", 
+                           byte_size, pattern.weight_file);
+            fclose(f);
+            continue;
+        }
+        
+        read_size = fread(data, 1, byte_size, f);
+        fclose(f);
+        
+        if (read_size != byte_size) {
+            LLAMA_LOG_ERROR("Failed to read data from %s (expected %zu, got %zu)\n",
+                           pattern.weight_file, byte_size, read_size);
+            free(data);
+            continue;
+        }
+        
+        // Create tensor
+        pattern.merged_weight = (ggml_tensor*)calloc(1, sizeof(ggml_tensor));
+        if (!pattern.merged_weight) {
+            LLAMA_LOG_ERROR("Failed to allocate tensor for %s\n", pattern.weight_file);
+            free(data);
+            continue;
+        }
+        
+        // 🔴 FP16 type
+        pattern.merged_weight->type = GGML_TYPE_F16;
+        pattern.merged_weight->data = data;
+        ggml_backend_buffer_t buf = ggml_backend_cpu_buffer_from_ptr(
+            data, 
+            byte_size
+        );
+        pattern.merged_weight->buffer = buf;
+        
+        // Set dimensions (dims = [4096, 4096])
+        pattern.merged_weight->ne[0] = dims[0];  // 4096
+        pattern.merged_weight->ne[1] = dims[1];  // 4096
+        pattern.merged_weight->ne[2] = 1;
+        pattern.merged_weight->ne[3] = 1;
+        
+        // 🔴 Calculate strides for FP16
+        size_t type_size = sizeof(ggml_fp16_t);  // 2 bytes
+        
+        pattern.merged_weight->nb[0] = type_size;
+        pattern.merged_weight->nb[1] = pattern.merged_weight->nb[0] * 
+            pattern.merged_weight->ne[0];
+        pattern.merged_weight->nb[2] = pattern.merged_weight->nb[1] * 
+            pattern.merged_weight->ne[1];
+        pattern.merged_weight->nb[3] = pattern.merged_weight->nb[2] * 
+            pattern.merged_weight->ne[2];
+        
+        pattern.merged_weight->op = GGML_OP_NONE;
+        pattern.merged_weight->flags = 0;
+        pattern.merged_weight->src[0] = nullptr;
+        pattern.merged_weight->src[1] = nullptr;
+        
+        LLAMA_LOG_INFO("  Loaded pattern %d: %s [%lld, %lld] (FP16) - skip layers %d-%d\n",
+                      i, pattern.weight_file, dims[0], dims[1],
+                      pattern.skip_start, pattern.skip_end);
+
+        printf("  ✅ Loaded successfully\n");
+        printf("  -> Loaded tensor dims: ne[0]=%lld, ne[1]=%lld\n",
+               pattern.merged_weight->ne[0],
+               pattern.merged_weight->ne[1]);
+    }
+    
+    g_skip_weights_loaded = true;
+}
+
+
+// Cleanup skip weights
+void llama_cleanup_skip_weights() {
+    for (int i = 1; i < 4; i++) {
+        if (g_skip_patterns[i].merged_weight) {
+            if (g_skip_patterns[i].merged_weight->data) {
+                free(g_skip_patterns[i].merged_weight->data);
+            }
+            free(g_skip_patterns[i].merged_weight);
+            g_skip_patterns[i].merged_weight = nullptr;
+        }
+    }
+    g_skip_weights_loaded = false;
+    LLAMA_LOG_DEBUG("ReplaceMe skip weights cleaned up\n");
+}
+
 
 //
 // interface implementation
@@ -411,3 +573,44 @@ const char * llama_print_system_info(void) {
     return s.c_str();
 }
 
+
+// llama.cpp - 파일 끝 부분에 추가
+
+// ============================================================================
+// ReplaceMe: Public API implementation
+// ============================================================================
+
+void llama_set_generation_skip_mode(
+    struct llama_context * ctx, 
+    enum llama_skip_mode mode) {
+    
+    GGML_ASSERT(ctx != nullptr);
+    GGML_ASSERT(mode >= LLAMA_SKIP_NONE && mode <= LLAMA_SKIP_23_30);
+    
+    ctx->generation_skip_mode = mode;
+    
+    if (mode != LLAMA_SKIP_NONE) {
+        const auto & pattern = g_skip_patterns[mode];
+        LLAMA_LOG_INFO("Set generation skip mode to %d (will skip layers %d-%d)\n",
+                      mode, pattern.skip_start, pattern.skip_end);
+    } else {
+        LLAMA_LOG_INFO("Set generation skip mode to NONE (original graph)\n");
+    }
+}
+
+void llama_end_generation(struct llama_context * ctx) {
+    GGML_ASSERT(ctx != nullptr);
+    
+    if (ctx->skip_mode != LLAMA_SKIP_NONE || ctx->is_generating) {
+        LLAMA_LOG_DEBUG("Generation ended, reset to original graph\n");
+    }
+    
+    ctx->skip_mode = LLAMA_SKIP_NONE;
+    ctx->generation_skip_mode = LLAMA_SKIP_NONE;
+    ctx->is_generating = false;
+}
+
+enum llama_skip_mode llama_get_skip_mode(struct llama_context * ctx) {
+    GGML_ASSERT(ctx != nullptr);
+    return ctx->skip_mode;
+}

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ggml.h" // for ggml_log_level
+#include "llama.h"
 
 #include <string>
 #include <vector>
@@ -63,12 +64,38 @@ std::string gguf_kv_to_str(const struct gguf_context * ctx_gguf, int i);
 #define LLAMA_TENSOR_NAME_FATTN "__fattn__"
 
 
-#include <atomic>
-#include <thread>
-#include <fstream>
 
-// Throughput monitoring
-extern std::atomic<int> g_token_count;
-extern std::atomic<bool> g_monitoring;
-extern std::thread g_monitor_thread;
-extern std::ofstream g_csv;
+
+
+// Layer output capture
+extern std::vector<float> g_layer17_vision_output;
+extern std::vector<float> g_layer17_text_output;
+extern std::vector<float> g_layer21_vision_output;
+extern std::vector<float> g_layer21_text_output;
+extern bool g_enable_layer_capture;
+extern int g_layer17_vision_captured;  // bool → int로 변경!
+extern bool g_layer17_text_captured;
+extern int g_layer21_vision_captured;  // bool → int로 변경!
+extern bool g_layer21_text_captured;
+
+// 별도로 복사된 tensor들
+extern ggml_tensor * g_layer17_output_copy;
+extern ggml_tensor * g_layer21_output_copy;
+
+
+// Skip pattern definition
+struct llama_skip_pattern {
+    const char* weight_file;
+    int skip_start;       // First layer to skip
+    int skip_end;         // Last layer to skip (inclusive)
+    int replace_idx;      // Layer index where merged weight is used
+    ggml_tensor* merged_weight;
+};
+
+// Global skip patterns
+extern llama_skip_pattern g_skip_patterns[4];
+extern bool g_skip_weights_loaded;
+
+// Load/cleanup functions
+void llama_load_skip_weights();
+void llama_cleanup_skip_weights();
