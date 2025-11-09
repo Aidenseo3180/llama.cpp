@@ -46,7 +46,7 @@ llama_skip_pattern g_skip_patterns[4] = {
     {
         /*.weight_file   =*/ "transform_layer23_to_layer28_fp16.bin",
         /*.skip_start    =*/ 23,
-        /*.skip_end      =*/ 38,
+        /*.skip_end      =*/ 28,
         /*.replace_idx   =*/ 22,
         /*.merged_weight =*/ nullptr
     },

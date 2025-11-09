@@ -1066,7 +1066,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
             if (!is_generating) {
                 if (1 < 100) {
                     // printf("using LLAMA_SKIP_25_28");
-                    skip_mode = LLAMA_SKIP_23_30;
+                    skip_mode = LLAMA_SKIP_23_28;
                 } else {
                     skip_mode = LLAMA_SKIP_25_28;
                 }
