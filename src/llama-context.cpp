@@ -1062,17 +1062,18 @@ int llama_context::decode(const llama_batch & batch_inp) {
             // Prefill: always use original graph
             skip_mode = LLAMA_SKIP_NONE;
             is_generating = false;
-        } else {
-            if (!is_generating) {
-                if (1 < 100) {
-                    // printf("using LLAMA_SKIP_25_28");
-                    skip_mode = LLAMA_SKIP_23_28;
-                } else {
-                    skip_mode = LLAMA_SKIP_25_28;
-                }
-                is_generating = true;
-            }
-        }
+        } 
+        // else {
+        //     if (!is_generating) {
+        //         if (1 < 100) {
+        //             // printf("using LLAMA_SKIP_25_28");
+        //             skip_mode = LLAMA_SKIP_23_28;
+        //         } else {
+        //             skip_mode = LLAMA_SKIP_25_28;
+        //         }
+        //         is_generating = true;
+        //     }
+        // }
 
         // skip_mode = LLAMA_SKIP_25_28;
         // is_generating = false;

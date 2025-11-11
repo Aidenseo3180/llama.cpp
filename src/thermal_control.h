@@ -20,7 +20,7 @@
 #define GPU_MAX_FREQ_PATH "/sys/class/kgsl/kgsl-3d0/devfreq/max_freq"
 
 // PID 설정
-#define TARGET_TEMPERATURE 60.0  // 목표 온도 (°C)
+#define TARGET_TEMPERATURE 55.0  // 목표 온도 (°C)
 #define CHECK_INTERVAL_MS 500    // 체크 간격 (ms) - 더 자주 체크할수록 더 정확함
 
 // PID 게인 (튜닝 필요)
